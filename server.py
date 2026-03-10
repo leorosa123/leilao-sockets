@@ -21,45 +21,102 @@ print("Servidor aguardando conexão...")
 # addr é o endereço do cliente e conn o socket de conexão com o cliente
 conn, addr = server.accept()
 
-print("Cliente conectado:", addr)
+print("Cliente conectado:\n", addr)
 
+# Definir as variaveis globais para o leilão
+lance_atual = 1000.0 # podemos até aplicar um random depois e adicionair mais valores iniciais 
+tempo_restante = 60 # tempo inicial de 1 minuto 
+leilao_ativo = True # status do leilão 
 
-def receber_mensagens():
+lock = threading.Lock() # garantir que duas threads não acessem as variáveis do leilão ao mesmo tempo
+
+# Thread 1 - Processar lances dos clientes
+def processar_lances():
+
+    global lance_atual, tempo_restante
 
     while True:
 
         try:
-            # mensagem recebida do cliente, decodificada para string
-            data = conn.recv(1024).decode()
+
+            data = conn.recv(1024).decode().strip()
 
             if not data:
                 break
 
-            print("Cliente enviou:", data)
+            # Atribuinto primeiro comando de verificar tempo 
+            if data == ":tempo":
+                #garantir que a leitura do tempo seja feita de forma segura e única 
+                with lock:
+                    tempo = tempo_restante
 
-            conn.send(f"Servidor recebeu: {data}".encode())
+                conn.sendall(
+                    f"[TEMPO RESTANTE]: {tempo}s\n".encode())
+                continue
+            elif data == ":item":
+                #consultar o lance atual
+                with lock:
+                    conn.sendall(f"[ITEM ATUAL]: Lance atual é R$ {lance_atual}\n ".encode())
+                    continue
+            elif data == ":quit":
+                #sair do leilão e encerrar a conexão
+                with lock:
+                    conn.sendall("Encerrando conexão...\n".encode())
+                    leilao_ativo = False # garantir que o cronometro pare se a conexão for encerrada
+                    break  
+            else: 
+                # verificar se a entrada é um número (lance) e processar o lance
+                try:
+
+                    valor = float(data)
+                    # garantir que apenas um lance seja processado por vez
+                    with lock:
+
+                        if valor > lance_atual:
+                            # resetando o cronometro para 60 segundos a cada novo lance maior
+                            lance_atual = valor
+                            tempo_restante = 60
+                            print(f"Cronometro resetado para 60 segundos devido a novo lance maior: R$ {valor} \n")
+                            conn.sendall(
+                                f"[NOVO LANCE]: R$ {valor}\n".encode()
+                            )
+
+                        else:
+
+                            conn.sendall(
+                                f"[LANÇAMENTO INVÁLIDO]: Lance menor que o atual (R$ {lance_atual})\n".encode()
+                            )
+
+                except:
+                    # se a entrada não for um número, enviar mensagem de erro
+                    conn.sendall("Entrada inválida\n".encode())
 
         except:
             break
 
-
-# THREAD DO TEMPO
+# Thread 2 - Cronometro do leilão
 def cronometro():
 
-    global tempo_restante
+    global tempo_restante, leilao_ativo
 
-    while tempo_restante > 0:
+    while leilao_ativo:
 
         time.sleep(1)
 
         with lock:
             tempo_restante -= 1
-            print("Tempo restante:", tempo_restante)
+            print("Tempo restante:", tempo_restante, "s")
+
+        if tempo_restante <= 0:
+            leilao_ativo = False
+            # quando tempo acabar, enviar mensagem de encerramento e o valor final do lance
+            conn.sendall(f"\n[ITEM VENDIDO] Valor final: R$ {lance_atual}\n".encode())
+            break
 
     print("Tempo encerrado!")
 
 
-thread_receber = threading.Thread(target=receber_mensagens)
+thread_receber = threading.Thread(target=processar_lances)
 
 # thread do tempo
 thread_tempo = threading.Thread(target=cronometro)
@@ -69,6 +126,7 @@ thread_tempo.start()
 
 # espera as threads terminarem
 thread_receber.join()
+leilao_ativo = False # garantir que o cronometro pare se a conexão for encerrada
 thread_tempo.join()
 
 conn.close()
