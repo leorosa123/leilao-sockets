@@ -13,8 +13,8 @@ print_lock = threading.Lock()
 def enviar(sock):
 
     while True:
-        with print_lock:
-            msg = input("Digite comando ou lance: ")
+        
+        msg = input("Digite comando ou lance: ")
 
         sock.send(msg.encode())
 
@@ -25,6 +25,7 @@ def enviar(sock):
 def receber(sock):
 
     while True:
+        buffer = ""
 
         try:
 
@@ -32,10 +33,14 @@ def receber(sock):
 
             if not msg:
                 break
+
+            buffer += msg
+
+            while "\n" in buffer:
+
+                mensagem, buffer = buffer.split("\n", 1)
+                print("\nServidor:", mensagem)
             
-            with print_lock:
-                print("\nServidor:", msg)
-          
         except:
             break
 
