@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+import random
 
 # endereço IP e porta do servidor
 HOST = "127.0.0.1"
@@ -116,17 +117,57 @@ def cronometro():
     print("Tempo encerrado!")
 
 
+i = 0 
+# THREAD 3 - Simulação de usuário anônimo
+def simular_usuario():
+    global lance_atual, tempo_restante, i
+
+    while i < 4 and leilao_ativo:  # executa apenas 4 vezes
+
+        time.sleep(random.randint(5, 15))  # espera aleatória
+
+        with lock:
+
+            variacao = random.randint(-50, 100)
+
+            lance_simulado = lance_atual + variacao
+
+            # se for maior, aceita como novo lance
+            if lance_simulado > lance_atual:
+
+                lance_atual = lance_simulado
+                tempo_restante = 60
+
+                conn.sendall(
+                    f"[USUÁRIO ANÔNIMO]: novo lance R$ {lance_simulado}\n".encode()
+                )
+                print(f"Usuário anônimo fez um lance de R$ {lance_simulado} \n")
+
+            else:
+
+                conn.sendall(
+                    f"[USUÁRIO ANÔNIMO]: tentou R$ {lance_simulado} (abaixo do atual)\n".encode()
+                )
+                print(f"Usuário anônimo tentou um lance de R$ {lance_simulado} (abaixo do atual)\n")
+        i += 1
+
+
 thread_receber = threading.Thread(target=processar_lances)
 
 # thread do tempo
 thread_tempo = threading.Thread(target=cronometro)
 
-thread_receber.start()
+# thread do usuário anônimo
+thread_usuario = threading.Thread(target=simular_usuario)
+
 thread_tempo.start()
+thread_receber.start()
+thread_usuario.start()
 
 # espera as threads terminarem
 thread_receber.join()
-leilao_ativo = False # garantir que o cronometro pare se a conexão for encerrada
+leilao_ativo = False # esperar o client finalziar a conexão para encerrar o leilão
+thread_usuario.join()
 thread_tempo.join()
 
 conn.close()
