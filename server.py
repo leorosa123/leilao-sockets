@@ -3,171 +3,163 @@ import threading
 import time
 import random
 
-# endereço IP e porta do servidor
 HOST = "127.0.0.1"
 PORT = 5000
 
-tempo_restante = 60
 lock = threading.Lock()
 
-#criando o socket do servidor
-# conexão TCP/IP
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.bind((HOST, PORT))
-# servidor começa a ouvir pelas conexões 
 server.listen(1)
 
 print("Servidor aguardando conexão...")
 
-# addr é o endereço do cliente e conn o socket de conexão com o cliente
 conn, addr = server.accept()
+print("Cliente conectado:", addr)
 
-print("Cliente conectado:\n", addr)
+itens = [
+    {"nome": "PlayStation 5", "lance_inicial": 3500},
+    {"nome": "Xbox Series X", "lance_inicial": 3200},
+    {"nome": "Nintendo Switch", "lance_inicial": 2000},
+    {"nome": "RTX 4070", "lance_inicial": 4500}
+]
 
-# Definir as variaveis globais para o leilão
-lance_atual = 1000.0 # podemos até aplicar um random depois e adicionair mais valores iniciais 
-tempo_restante = 60 # tempo inicial de 1 minuto 
-leilao_ativo = True # status do leilão 
+itens_vendidos = []
+item_atual = random.choice(itens)
+nome_item = item_atual["nome"]
+lance_atual = item_atual["lance_inicial"]
 
-lock = threading.Lock() # garantir que duas threads não acessem as variáveis do leilão ao mesmo tempo
+tempo_restante = 20
+leilao_ativo = True
+ultimo_lance_por = "nenhum"
+vencedor = "nenhum"
 
-# Thread 1 - Processar lances dos clientes
+# =============================
+# THREAD 1 - PROCESSAR LANCES
+# =============================
 def processar_lances():
+    global lance_atual, tempo_restante, ultimo_lance_por, vencedor, leilao_ativo
 
-    global lance_atual, tempo_restante
-
-    while True:
-
+    while leilao_ativo:
         try:
-
             data = conn.recv(1024).decode().strip()
-
             if not data:
                 break
 
-            # Atribuinto primeiro comando de verificar tempo 
             if data == ":tempo":
-                #garantir que a leitura do tempo seja feita de forma segura e única 
                 with lock:
                     tempo = tempo_restante
+                conn.sendall(f"[TEMPO RESTANTE]: {tempo}\n".encode())
 
-                conn.sendall(
-                    f"[TEMPO RESTANTE]: {tempo}s\n".encode())
-                continue
             elif data == ":item":
-                #consultar o lance atual
                 with lock:
-                    conn.sendall(f"[ITEM ATUAL]: Lance atual é R$ {lance_atual}\n ".encode())
-                    continue
+                    conn.sendall(f"[ITEM]: {nome_item} | Lance atual: R$ {lance_atual} | Por: {ultimo_lance_por}\n".encode())
+
             elif data == ":quit":
-                #sair do leilão e encerrar a conexão
-                with lock:
-                    conn.sendall("Encerrando conexão...\n".encode())
-                    leilao_ativo = False # garantir que o cronometro pare se a conexão for encerrada
-                    break  
-            else: 
-                # verificar se a entrada é um número (lance) e processar o lance
+                conn.sendall("Encerrando conexão...\n".encode())
+                leilao_ativo = False
+                break
+
+            else:
                 try:
-
                     valor = float(data)
-                    # garantir que apenas um lance seja processado por vez
                     with lock:
-
                         if valor > lance_atual:
-                            # resetando o cronometro para 60 segundos a cada novo lance maior
                             lance_atual = valor
-                            tempo_restante = 60
-                            print(f"Cronometro resetado para 60 segundos devido a novo lance maior: R$ {valor} \n")
-                            conn.sendall(
-                                f"[NOVO LANCE]: R$ {valor}\n".encode()
-                            )
-
+                            tempo_restante = 20
+                            ultimo_lance_por = "cliente"
+                            vencedor = "cliente"
+                            print(f"Novo lance do cliente: R$ {valor}")
+                            
+                            # Agora envia QUEM deu o lance
+                            conn.sendall(f"[ITEM]: {nome_item} | Lance atual: R$ {lance_atual} | Por: {ultimo_lance_por}\n".encode())
                         else:
-
-                            conn.sendall(
-                                f"[LANÇAMENTO INVÁLIDO]: Lance menor que o atual (R$ {lance_atual})\n".encode()
-                            )
-
-                except:
-                    # se a entrada não for um número, enviar mensagem de erro
-                    conn.sendall("Entrada inválida\n".encode())
-
-        except:
+                            conn.sendall(f"[LANCE INVÁLIDO]: menor que o atual (R$ {lance_atual})\n".encode())
+                except ValueError:
+                    # Ignora se não for número (para não travar)
+                    pass 
+        except Exception:
             break
 
-# Thread 2 - Cronometro do leilão
+# =============================
+# THREAD 2 - CRONÔMETRO
+# =============================
 def cronometro():
-
     global tempo_restante, leilao_ativo
 
     while leilao_ativo:
-
         time.sleep(1)
-
         with lock:
             tempo_restante -= 1
-            print("Tempo restante:", tempo_restante, "s")
+            conn.sendall(f"[TEMPO RESTANTE]: {tempo_restante}\n".encode())
 
-        if tempo_restante <= 0:
-            leilao_ativo = False
-            # quando tempo acabar, enviar mensagem de encerramento e o valor final do lance
-            conn.sendall(f"\n[ITEM VENDIDO] Valor final: R$ {lance_atual}\n".encode())
-            break
+            if tempo_restante <= 0:
+                break
 
-    print("Tempo encerrado!")
+    leilao_ativo = False
 
+    with lock:
+        resultado = {
+            "item": nome_item,
+            "valor": lance_atual,
+            "vencedor": vencedor
+        }
+        itens_vendidos.append(resultado)
 
-i = 0 
-# THREAD 3 - Simulação de usuário anônimo
+    # Traduz para aparecer certinho no fim
+    vencedor_final = "VOCÊ" if vencedor == "cliente" else ("Anônimo" if vencedor == "anonimo" else "Ninguém")
+    
+    conn.sendall(f"\n[ITEM VENDIDO] {nome_item} | Valor: R$ {lance_atual:.2f} | Vencedor: {vencedor_final}\n".encode())
+    print("\nItem vendido:", resultado)
+
+# =============================
+# THREAD 3 - USUÁRIO SIMULADO
+# =============================
 def simular_usuario():
-    global lance_atual, tempo_restante, i
-
-    while i < 4 and leilao_ativo:  # executa apenas 4 vezes
-
-        time.sleep(random.randint(5, 15))  # espera aleatória
-
+    global lance_atual, tempo_restante, ultimo_lance_por, vencedor
+    i = 0
+    
+    while i < 4 and leilao_ativo:
+        time.sleep(random.randint(5, 10)) # Deixei o bot um pouco mais rápido
+        
         with lock:
+            if not leilao_ativo or ultimo_lance_por == "anonimo":
+                continue
 
-            variacao = random.randint(-50, 100)
+            porcentagem = random.uniform(2, 8)
+            lance_simulado = lance_atual * (1 + porcentagem / 100)
+            lance_atual = round(lance_simulado, 2)
 
-            lance_simulado = lance_atual + variacao
+            tempo_restante = 20
+            ultimo_lance_por = "anonimo"
+            vencedor = "anonimo"
 
-            # se for maior, aceita como novo lance
-            if lance_simulado > lance_atual:
+            print(f"Usuário anônimo fez lance: R$ {lance_atual}")
+            # Agora envia QUEM deu o lance
+            conn.sendall(f"[ITEM]: {nome_item} | Lance atual: R$ {lance_atual} | Por: {ultimo_lance_por}\n".encode())
 
-                lance_atual = lance_simulado
-                tempo_restante = 60
-
-                conn.sendall(
-                    f"[USUÁRIO ANÔNIMO]: novo lance R$ {lance_simulado}\n".encode()
-                )
-                print(f"Usuário anônimo fez um lance de R$ {lance_simulado} \n")
-
-            else:
-
-                conn.sendall(
-                    f"[USUÁRIO ANÔNIMO]: tentou R$ {lance_simulado} (abaixo do atual)\n".encode()
-                )
-                print(f"Usuário anônimo tentou um lance de R$ {lance_simulado} (abaixo do atual)\n")
         i += 1
 
+# =============================
+# INICIAR LEILÃO
+# =============================
+if __name__ == "__main__":
+    # Inicia com quem está vencendo
+    conn.sendall(f"[LEILÃO INICIADO] Item: {nome_item} | Lance inicial: R$ {lance_atual} | Por: {ultimo_lance_por}\n".encode())
 
-thread_receber = threading.Thread(target=processar_lances)
+    thread_receber = threading.Thread(target=processar_lances)
+    thread_tempo = threading.Thread(target=cronometro)
+    thread_usuario = threading.Thread(target=simular_usuario)
 
-# thread do tempo
-thread_tempo = threading.Thread(target=cronometro)
+    thread_tempo.start()
+    thread_receber.start()
+    thread_usuario.start()
 
-# thread do usuário anônimo
-thread_usuario = threading.Thread(target=simular_usuario)
-
-thread_tempo.start()
-thread_receber.start()
-thread_usuario.start()
-
-# espera as threads terminarem
-thread_receber.join()
-leilao_ativo = False # esperar o client finalziar a conexão para encerrar o leilão
-thread_usuario.join()
-thread_tempo.join()
-
-conn.close()
+    thread_receber.join()
+    leilao_ativo = False
+    
+    print("\nItens vendidos no leilão:")
+    for item in itens_vendidos:
+        print(item)
+    
+    conn.close()
