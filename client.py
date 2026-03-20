@@ -9,9 +9,10 @@ PORT = 5000
 item = "Aguardando..."
 lance = "0.00"
 tempo = "20"
-vencedor = "Ninguém" # <--- Nova variável
+vencedor = "Ninguém"
 running = True
 
+notificacoes = [] 
 lock = threading.Lock()
 
 if os.name == 'nt':
@@ -20,15 +21,44 @@ if os.name == 'nt':
 def limpar():
     os.system("cls" if os.name == "nt" else "clear")
 
+def adicionar_notificacao(msg):
+    global notificacoes
+    with lock:
+        notificacoes.append(msg)
+        if len(notificacoes) > 5: 
+            notificacoes.pop(0)
+
 def desenhar():
     with lock:
-        sys.stdout.write("\0337\033[H") 
+        sys.stdout.write("\0337\033[H")
         
-        sys.stdout.write(f"Item: {item:<30}\n")
-        sys.stdout.write(f"Lance atual: R$ {lance:<25}\n")
-        sys.stdout.write(f"Vencendo agora: {vencedor:<25}\n") # <--- Mostra quem tá ganhando
-        sys.stdout.write(f"Tempo restante: {tempo:<25}\n")
-        sys.stdout.write("-" * 40 + "\n")
+        # Aumentamos todos os 60 para 80 para dar espaço para as mensagens longas
+        sys.stdout.write("=" * 80 + "\n")
+        sys.stdout.write("               PAINEL DE LEILÃO".ljust(80) + "\n")
+        sys.stdout.write("=" * 80 + "\n")
+        sys.stdout.write(f"Item: {item}".ljust(80) + "\n")
+        sys.stdout.write(f"Lance atual: R$ {lance}".ljust(80) + "\n")
+        sys.stdout.write(f"Vencendo agora: {vencedor}".ljust(80) + "\n")
+        sys.stdout.write(f"Tempo restante: {tempo}s".ljust(80) + "\n")
+        sys.stdout.write("=" * 80 + "\n")
+        
+        sys.stdout.write(" COMANDOS DISPONÍVEIS".ljust(80) + "\n")
+        sys.stdout.write(" [VALOR] Dar lance  | [:carteira] Ver saldo e itens".ljust(80) + "\n")
+        sys.stdout.write(" [:tempo] Ver tempo | [:quit] Sair da aplicação".ljust(80) + "\n")
+        sys.stdout.write("=" * 80 + "\n")
+        
+        sys.stdout.write(" NOTIFICAÇÕES & ALERTAS".ljust(80) + "\n")
+        sys.stdout.write("-" * 80 + "\n")
+        
+        linhas_vazias = 5 - len(notificacoes)
+        for notif in notificacoes:
+            # Aumentamos o limite de corte de 59 para 79
+            sys.stdout.write(f"> {notif}".ljust(80)[:79] + "\n") 
+            
+        for _ in range(linhas_vazias):
+            sys.stdout.write(" ".ljust(80) + "\n")
+            
+        sys.stdout.write("-" * 80 + "\n")
         
         sys.stdout.write("\0338")
         sys.stdout.flush()
@@ -43,34 +73,30 @@ def receber(sock):
             
             linhas = msg.strip().split("\n")
 
-            with lock:
-                for linha in linhas:
-                    if "[LEILÃO INICIADO]" in linha or "[ITEM]" in linha:
-                        partes = linha.split("|")
-                        if len(partes) >= 3:
-                            item = partes[0].split(":")[1].strip()
-                            lance = partes[1].split("R$")[1].strip()
-                            quem = partes[2].split(":")[1].strip()
-                            
-                            # Traduz quem está ganhando para ficar mais visual
-                            if quem == "cliente":
-                                vencedor = "VOCÊ"
-                            elif quem == "anonimo":
-                                vencedor = "Anônimo"
-                            else:
-                                vencedor = "Ninguém"
+            for linha in linhas:
+                if not linha.strip():
+                    continue
 
-                    elif "[TEMPO RESTANTE]" in linha:
-                        tempo_recebido = int(linha.split(":")[1].strip())
+                if "[LEILÃO INICIADO]" in linha or "[ITEM]:" in linha:
+                    partes = linha.split("|")
+                    if len(partes) >= 3:
+                        item = partes[0].split(":")[1].strip()
+                        lance = partes[1].split("R$")[1].strip()
+                        quem = partes[2].split(":")[1].strip()
                         
-                        tempo = str(tempo_recebido)
+                        vencedor = "VOCÊ" if quem != "anonimo" and quem != "nenhum" else ("Anônimo" if quem == "anonimo" else "Ninguém")
 
-                    elif "[ITEM VENDIDO]" in linha:
-                        limpar()
-                        print("\n" + linha)
-                        print("Pressione ENTER para sair...")
-                        running = False
-                        return
+                elif "[TEMPO RESTANTE]" in linha:
+                    tempo_recebido = linha.split(":")[1].strip()
+                    tempo = str(tempo_recebido)
+
+                elif "[ITEM VENDIDO]" in linha:
+                    # Agora ele apenas avisa que vendeu e reseta o vencedor para o próximo
+                    adicionar_notificacao(linha)
+                    vencedor = "Aguardando próximo..."
+
+                elif any(tag in linha for tag in ["[INFO]", "[RESPOSTA]", "[ALERTA]", "CONECTADO!!"]):
+                    adicionar_notificacao(linha)
 
             if running:
                 desenhar()
@@ -82,9 +108,12 @@ def receber(sock):
 def enviar(sock):
     global running
 
-    limpar()
-    print("\n\n\n\n\n") 
-    print("Digite seu lance (ou ':quit' para sair): ")
+    limpar() 
+    sys.stdout.write("\n" * 20) 
+    sys.stdout.write("Digite seu lance ou comando:\n> ")
+    sys.stdout.flush()
+
+    desenhar()
 
     while running:
         try:
@@ -92,11 +121,12 @@ def enviar(sock):
             if not running: break
                 
             sock.sendall((msg + "\n").encode())
+            
             if msg == ":quit":
                 running = False
                 break
                 
-            sys.stdout.write("\033[1A\033[2K")
+            sys.stdout.write("\033[1A\033[2K> ")
             sys.stdout.flush()
             
         except EOFError:
@@ -106,11 +136,21 @@ if __name__ == "__main__":
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         client.connect((HOST, PORT))
+        
+        # --- LOGIN ANTES DA TELA ---
+        # Recebe o texto "Por favor, digite seu NOME DE USUARIO: " do servidor
+        mensagem_login = client.recv(1024).decode() 
+        nome = input(mensagem_login)
+        client.sendall((nome + "\n").encode())
+        
+        # --- INICIA A INTERFACE ---
         thread_receber = threading.Thread(target=receber, args=(client,))
         thread_receber.daemon = True
         thread_receber.start()
+        
         enviar(client)
+        
     except ConnectionRefusedError:
-        print("Erro: Servidor não encontrado.")
+        print("Erro: Servidor não encontrado. Ligue o servidor primeiro!")
     finally:
         client.close()
