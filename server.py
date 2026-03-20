@@ -30,6 +30,7 @@ item_atual = None
 lance_atual = 0.0
 vencedor_atual = "nenhum"
 tempo_restante = 20
+lances_bot = 0  
 
 def enviar_para_todos(mensagem):
     """Envia uma mensagem para todos os clientes conectados simultaneamente."""
@@ -43,7 +44,7 @@ def enviar_para_todos(mensagem):
 # THREAD DO LEILOEIRO (LOOP DE ITENS)
 # =============================
 def gerenciar_leiloes():
-    global indice_item_atual, item_atual, lance_atual, vencedor_atual, tempo_restante, leilao_geral_ativo
+    global indice_item_atual, item_atual, lance_atual, vencedor_atual, tempo_restante, leilao_geral_ativo,lances_bot 
 
     while indice_item_atual < len(itens_disponiveis) and leilao_geral_ativo:
         with lock:
@@ -51,7 +52,7 @@ def gerenciar_leiloes():
             lance_atual = item_atual["lance_inicial"]
             vencedor_atual = "nenhum"
             tempo_restante = 20
-        
+            lances_bot = 0
         enviar_para_todos(f"\n[LEILÃO INICIADO] Item: {item_atual['nome']} | Lance inicial: R$ {lance_atual} | Por: {vencedor_atual}\n")
         enviar_para_todos(f"[ITEM]: {item_atual['nome']} | Lance atual: R$ {lance_atual} | Por: {vencedor_atual}\n")
         
@@ -87,29 +88,38 @@ def gerenciar_leiloes():
 # THREAD DO BOT
 # =============================
 def simular_usuario():
-    global lance_atual, tempo_restante, vencedor_atual
+    global lance_atual, tempo_restante, vencedor_atual, lances_bot
     
     while leilao_geral_ativo:
         time.sleep(random.randint(6, 12))
+        
         with lock:
             if item_atual is None or tempo_restante <= 0:
                 continue
+            
             if vencedor_atual == "anonimo":
+                continue
+            
+            if lances_bot >= 3:
                 continue
             
             lance_simulado = lance_atual * random.uniform(1.02, 1.08)
             
-            # Reembolsa o cliente que estava ganhando antes
+            # Reembolsa o vencedor anterior
             if vencedor_atual in usuarios_db:
                 usr = usuarios_db[vencedor_atual]
                 usr["saldo"] += usr["bloqueado"]
                 usr["bloqueado"] = 0.0
-                
+            
             lance_atual = round(lance_simulado, 2)
             tempo_restante = 20
             vencedor_atual = "anonimo"
             
-            enviar_para_todos(f"[ITEM]: {item_atual['nome']} | Lance atual: R$ {lance_atual} | Por: {vencedor_atual}\n")
+            lances_bot += 1  
+
+            enviar_para_todos(
+                f"[ITEM]: {item_atual['nome']} | Lance atual: R$ {lance_atual} | Por: {vencedor_atual}\n"
+            )
 
 # =============================
 # THREAD DE CADA CLIENTE CONECTADO
