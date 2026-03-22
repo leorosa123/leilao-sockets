@@ -170,14 +170,38 @@ def processar_cliente(conn, addr):
             elif data == ":carteira":
                 with lock:
                     usr = usuarios_db[nome_usuario]
-                    lista_itens = ", ".join(usr["itens"]) if usr["itens"] else "Nenhum"
+                    nomes_dos_itens = [i["nome"] for i in usr["itens"]]
+                    lista_txt = ", ".join(nomes_dos_itens) if nomes_dos_itens else "Nenhum"
                     conn.sendall(f"[INFO] Saldo Livre: R$ {usr['saldo']:.2f} | Bloqueado: R$ {usr['bloqueado']:.2f}\n".encode())
-                    conn.sendall(f"[INFO] Seus Itens: {lista_itens}\n".encode())
+                    conn.sendall(f"[INFO] Seus Itens: {lista_txt}\n".encode())
             
             elif data == ":item":
                 with lock:
                     if item_atual:
                         conn.sendall(f"[INFO] Item na mesa: {item_atual['nome']} | Maior lance: R$ {lance_atual}\n".encode())
+            
+
+            elif data.startswith(":vender"):
+                nome_item_venda = data.replace(":vender", "").strip()
+                if not nome_item_venda:
+                    conn.sendall("[ALERTA] Uso correto: :vender [Nome do Item]\n".encode())
+                    continue
+
+                with lock:
+                    usr = usuarios_db[nome_usuario]
+                    # Busca o item dentro da lista de dicionários
+                    item_obj = next((i for i in usr["itens"] if i["nome"].lower() == nome_item_venda.lower()), None)
+
+                    if item_obj:
+                        valor_pago = item_obj["pago"]
+                        valor_reembolso = valor_pago * 0.9  # 90% do valor real pago
+                        
+                        usr["itens"].remove(item_obj)
+                        usr["saldo"] += valor_reembolso
+                        
+                        conn.sendall(f"[INFO] Item '{item_obj['nome']}' vendido! Você pagou R$ {valor_pago:.2f} e recebeu R$ {valor_reembolso:.2f}.\n".encode())
+                    else:
+                        conn.sendall(f"[ALERTA] Você não possui o item: {nome_item_venda}\n".encode())
 
             else:
                 try:
@@ -271,3 +295,5 @@ if __name__ == "__main__":
             print("\nEncerrando servidor...")
             leilao_geral_ativo = False
             break
+
+

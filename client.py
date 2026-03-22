@@ -44,7 +44,7 @@ def desenhar():
         
         sys.stdout.write(" COMANDOS DISPONÍVEIS".ljust(80) + "\n")
         sys.stdout.write(" [VALOR] Dar lance  | [:carteira] Ver saldo e itens".ljust(80) + "\n")
-        sys.stdout.write(" [:tempo] Ver tempo | [:quit] Sair da aplicação".ljust(80) + "\n")
+        sys.stdout.write(" [:vender NOME] Vender item (90% retorno) | [:quit] Sair".ljust(80) + "\n") # Nova linha
         sys.stdout.write("=" * 80 + "\n")
         
         sys.stdout.write(" NOTIFICAÇÕES & ALERTAS".ljust(80) + "\n")
