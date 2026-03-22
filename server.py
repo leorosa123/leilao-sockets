@@ -66,9 +66,9 @@ def gerenciar_leiloes():
         # Fim do tempo do item atual: Entregar item ao vencedor
         with lock:
             if vencedor_atual in usuarios_db:
-                # Efetiva a compra e entrega o item para o usuário
                 usuarios_db[vencedor_atual]["bloqueado"] = 0.0
-                usuarios_db[vencedor_atual]["itens"].append(item_atual["nome"])
+                item_com_preco = {"nome": item_atual["nome"], "pago": lance_atual}
+                usuarios_db[vencedor_atual]["itens"].append(item_com_preco)
                 nome_exibicao = vencedor_atual
             elif vencedor_atual == "anonimo":
                 nome_exibicao = "Anônimo"
