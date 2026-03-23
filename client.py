@@ -15,6 +15,9 @@ running = True
 notificacoes = [] 
 lock = threading.Lock()
 
+# CORRIGIDO: Armazena o nome do usuário desta instância do cliente
+meu_nome = ""
+
 if os.name == 'nt':
     os.system("")
 
@@ -84,7 +87,16 @@ def receber(sock):
                         lance = partes[1].split("R$")[1].strip()
                         quem = partes[2].split(":")[1].strip()
                         
-                        vencedor = "VOCÊ" if quem != "anonimo" and quem != "nenhum" else ("Anônimo" if quem == "anonimo" else "Ninguém")
+                        # CORRIGIDO: Exibe "VOCÊ" só se for o usuário local; caso contrário,
+                        # exibe o nome real de quem está liderando
+                        if quem == "anonimo":
+                            vencedor = "Anônimo"
+                        elif quem == "nenhum":
+                            vencedor = "Ninguém"
+                        elif quem == meu_nome:
+                            vencedor = f"VOCÊ ({meu_nome})"
+                        else:
+                            vencedor = quem
 
                 elif "[TEMPO RESTANTE]" in linha:
                     tempo_recebido = linha.split(":")[1].strip()
@@ -142,6 +154,9 @@ if __name__ == "__main__":
         mensagem_login = client.recv(1024).decode() 
         nome = input(mensagem_login)
         client.sendall((nome + "\n").encode())
+        
+        # CORRIGIDO: Salva o nome local para uso na comparação do painel
+        meu_nome = nome
         
         # --- INICIA A INTERFACE ---
         thread_receber = threading.Thread(target=receber, args=(client,))
