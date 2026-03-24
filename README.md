@@ -113,8 +113,6 @@ Responsável por:
 | `processar_cliente` (Thread A — por cliente) | Recebe e processa comandos do cliente |
 | `_thread_envio` (Thread B — por cliente) | Consome a fila individual e envia mensagens ao socket do cliente |
 
-> **Fase 2:** cada cliente possui exatamente 2 threads dedicadas (Thread A + Thread B), conforme requisito.
-
 ---
 
 ## Cliente
