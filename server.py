@@ -5,15 +5,43 @@ import time
 import random
 import sys
 import queue
+import json
+import signal
+import os
 from datetime import datetime
 
 HOST = "127.0.0.1"
 PORT = 5000
 
 MAX_CLIENTES = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+ARQUIVO_DB = "usuarios_db.json"
 clientes_ativos = 0
 
 lock = threading.Lock()
+server = None
+
+def carregar_db():
+    global usuarios_db
+    if os.path.exists(ARQUIVO_DB):
+        try:
+            with open(ARQUIVO_DB, "r", encoding="utf-8") as f:
+                usuarios_db = json.load(f)
+            for dados in usuarios_db.values():
+                dados["bloqueado"] = 0.0
+            print(f"[DB] {len(usuarios_db)} usuário(s) carregado(s) de '{ARQUIVO_DB}'.")
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[DB] Falha ao carregar '{ARQUIVO_DB}': {e}. Iniciando com DB vazio.")
+            usuarios_db = {}
+    else:
+        usuarios_db = {}
+
+def salvar_db():
+    try:
+        with open(ARQUIVO_DB, "w", encoding="utf-8") as f:
+            json.dump(usuarios_db, f, ensure_ascii=False, indent=2)
+        print(f"[DB] Dados de {len(usuarios_db)} usuário(s) salvos em '{ARQUIVO_DB}'.")
+    except OSError as e:
+        print(f"[DB] Falha ao salvar '{ARQUIVO_DB}': {e}")
 
 # 1. LISTA DE ITENS (Todos abaixo de 5.000)
 itens_disponiveis = [
@@ -48,7 +76,7 @@ def _thread_envio(conn, fila):
             break
         try:
             conn.sendall(mensagem.encode())
-        except Exception:
+        except (BrokenPipeError, ConnectionResetError, OSError):
             break
 
 def enviar_para_todos(mensagem):
@@ -100,12 +128,19 @@ def gerenciar_leiloes():
                 nome_exibicao = "Anônimo" if vencedor_atual == "anonimo" else "Ninguém"
 
             enviar_para_todos(f"\n[ITEM VENDIDO] {item_atual['nome']} arrematado! Vencedor: {nome_exibicao}\n")
+            salvar_db()
         
         # Pausa de 5 segundos antes de puxar o próximo item da lista
         time.sleep(5) 
         indice_item_atual += 1
 
     enviar_para_todos("\n[INFO] O Leilão acabou! Todos os itens foram vendidos.\n")
+    with lock:
+        salvar_db()
+    try:
+        server.close()
+    except (OSError, AttributeError, TypeError):
+        pass
     leilao_geral_ativo = False
 
 
@@ -140,7 +175,8 @@ def simular_usuario():
             tempo_restante = 20
             vencedor_atual = "anonimo"
             
-            lances_bot += 1  
+            lances_bot += 1
+            salvar_db()
 
             enviar_para_todos(
                 f"[ITEM]: {item_atual['nome']} | Lance atual: R$ {lance_atual} | Por: {vencedor_atual}\n"
@@ -171,6 +207,7 @@ def processar_cliente(conn, addr):
     with lock:
         if nome_usuario not in usuarios_db:
             usuarios_db[nome_usuario] = {"saldo": 5000.0, "bloqueado": 0.0, "itens": []}
+            salvar_db()
         
         # NOVO (Fase 2): Registra a tupla (conn, nome_usuario, fila_envio) para filas individuais
         clientes_conectados.append((conn, nome_usuario, fila_envio))
@@ -186,134 +223,158 @@ def processar_cliente(conn, addr):
             conn.sendall(f"[ITEM]: {item_atual['nome']} | Lance atual: R$ {lance_atual} | Por: {vencedor_atual}\n".encode())
 
     # 4. LOOP DE COMANDOS DO CLIENTE
-    while leilao_geral_ativo:
-        try:
-            data = conn.recv(1024).decode().strip()
-            if not data: break
+    try:
+        while leilao_geral_ativo:
+            try:
+                data = conn.recv(1024).decode().strip()
+                if not data: break
 
-            if data == ":quit":
-                break
-                
-            elif data == ":tempo":
-                with lock:
-                    # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
-                    fila_envio.put(f"[INFO] Tempo restante: {tempo_restante}s\n")
-
-            elif data == ":carteira":
-                with lock:
-                    usr = usuarios_db[nome_usuario]
-                    nomes_dos_itens = [i["nome"] for i in usr["itens"]]
-                    lista_txt = ", ".join(nomes_dos_itens) if nomes_dos_itens else "Nenhum"
-                    # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
-                    fila_envio.put(f"[INFO] Saldo Livre: R$ {usr['saldo']:.2f} | Bloqueado: R$ {usr['bloqueado']:.2f}\n")
-                    fila_envio.put(f"[INFO] Seus Itens: {lista_txt}\n")
-            
-            elif data == ":item":
-                with lock:
-                    if item_atual:
-                        # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
-                        fila_envio.put(f"[INFO] Item na mesa: {item_atual['nome']} | Maior lance: R$ {lance_atual}\n")
-            
-
-            elif data.startswith(":vender"):
-                nome_item_venda = data.replace(":vender", "").strip()
-                if not nome_item_venda:
-                    # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
-                    fila_envio.put("[ALERTA] Uso correto: :vender [Nome do Item]\n")
-                    continue
-
-                with lock:
-                    usr = usuarios_db[nome_usuario]
-                    # Busca o item dentro da lista de dicionários
-                    item_obj = next((i for i in usr["itens"] if i["nome"].lower() == nome_item_venda.lower()), None)
-
-                    if item_obj:
-                        valor_pago = item_obj["pago"]
-                        valor_reembolso = valor_pago * 0.9  # 90% do valor real pago
-                        
-                        usr["itens"].remove(item_obj)
-                        usr["saldo"] += valor_reembolso
-                        
-                        # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
-                        fila_envio.put(f"[INFO] Item '{item_obj['nome']}' vendido! Você pagou R$ {valor_pago:.2f} e recebeu R$ {valor_reembolso:.2f}.\n")
-                    else:
-                        # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
-                        fila_envio.put(f"[ALERTA] Você não possui o item: {nome_item_venda}\n")
-
-            else:
-                try:
-                    valor = float(data)
-                    # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
-                    fila_envio.put(f"[RESPOSTA] Voce executou: LANCE de R$ {valor:.2f}\n")
+                if data == ":quit":
+                    break
                     
+                elif data == ":tempo":
                     with lock:
-                        if not item_atual or tempo_restante <= 0:
-                            # NOVO (Fase 2): Usa fila_envio via nova lógica
-                            fila_envio.put("[ALERTA] Nenhum leilão rodando. Aguarde o próximo item.\n")
-                            continue
-                        
+                        # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
+                        fila_envio.put(f"[INFO] Tempo restante: {tempo_restante}s\n")
+
+                elif data == ":carteira":
+                    with lock:
                         usr = usuarios_db[nome_usuario]
-                        
-                        if vencedor_atual == nome_usuario:
-                            usr["saldo"] += usr["bloqueado"]
-                            usr["bloqueado"] = 0.0
-                        
-                        if valor <= lance_atual:
-                            fila_envio.put(f"[ALERTA] Lance inválido. Mínimo: R$ {lance_atual + 0.01:.2f}\n")
-                            continue
-                        
-                        if usr["saldo"] < valor:
-                            fila_envio.put(f"[ALERTA] Saldo insuficiente! Saldo livre: R$ {usr['saldo']:.2f}\n")
-                            continue
-                    
-                        if vencedor_atual in usuarios_db and vencedor_atual != nome_usuario:
-                            perdedor = usuarios_db[vencedor_atual]
-                            perdedor["saldo"] += perdedor["bloqueado"]
-                            perdedor["bloqueado"] = 0.0
-                            for c, u, f in clientes_conectados:
-                                if u == vencedor_atual:
-                                    f.put(f"[ALERTA] Você foi superado! Saldo desbloqueado: R$ {perdedor['saldo']:.2f}\n")
-                        
-                        usr["saldo"] -= valor
-                        usr["bloqueado"] = valor
-                        lance_atual = valor
-                        tempo_restante = 20
-                        vencedor_atual = nome_usuario
-                        
-                        enviar_para_todos(
-                            f"[ITEM]: {item_atual['nome']} | Lance atual: R$ {lance_atual} | Por: {vencedor_atual}\n"
-                        )
-                        fila_envio.put(f"[INFO] R$ {valor:.2f} bloqueados. Saldo livre: R$ {usr['saldo']:.2f}\n")
+                        nomes_dos_itens = [i["nome"] for i in usr["itens"]]
+                        lista_txt = ", ".join(nomes_dos_itens) if nomes_dos_itens else "Nenhum"
+                        # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
+                        fila_envio.put(f"[INFO] Saldo Livre: R$ {usr['saldo']:.2f} | Bloqueado: R$ {usr['bloqueado']:.2f}\n")
+                        fila_envio.put(f"[INFO] Seus Itens: {lista_txt}\n")
+                
+                elif data == ":item":
+                    with lock:
+                        if item_atual:
+                            # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
+                            fila_envio.put(f"[INFO] Item na mesa: {item_atual['nome']} | Maior lance: R$ {lance_atual}\n")
+                
 
-                except ValueError:
-                    # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
-                    fila_envio.put("[ALERTA] Comando inválido. Digite um número ou :comando\n")
+                elif data.startswith(":vender"):
+                    nome_item_venda = data.replace(":vender", "").strip()
+                    if not nome_item_venda:
+                        # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
+                        fila_envio.put("[ALERTA] Uso correto: :vender [Nome do Item]\n")
+                        continue
 
-        except Exception:
-            break
-    
-    # Ao sair do loop
-    with lock:
-        cliente_tuple = (conn, nome_usuario, fila_envio)
-        if cliente_tuple in clientes_conectados:
-            clientes_conectados.remove(cliente_tuple)
-        clientes_ativos -= 1
-    
-    fila_envio.put(None)
-    thread_b.join(timeout=2)
-    
-    conn.close()
-    print(f"{nome_usuario} desconectou.")
+                    with lock:
+                        usr = usuarios_db[nome_usuario]
+                        # Busca o item dentro da lista de dicionários
+                        item_obj = next((i for i in usr["itens"] if i["nome"].lower() == nome_item_venda.lower()), None)
+
+                        if item_obj:
+                            valor_pago = item_obj["pago"]
+                            valor_reembolso = valor_pago * 0.9  # 90% do valor real pago
+                            
+                            usr["itens"].remove(item_obj)
+                            usr["saldo"] += valor_reembolso
+                            salvar_db()
+                            
+                            # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
+                            fila_envio.put(f"[INFO] Item '{item_obj['nome']}' vendido! Você pagou R$ {valor_pago:.2f} e recebeu R$ {valor_reembolso:.2f}.\n")
+                        else:
+                            # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
+                            fila_envio.put(f"[ALERTA] Você não possui o item: {nome_item_venda}\n")
+
+                else:
+                    try:
+                        valor = float(data)
+                        # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
+                        fila_envio.put(f"[RESPOSTA] Voce executou: LANCE de R$ {valor:.2f}\n")
+                        
+                        with lock:
+                            if not item_atual or tempo_restante <= 0:
+                                # NOVO (Fase 2): Usa fila_envio via nova lógica
+                                fila_envio.put("[ALERTA] Nenhum leilão rodando. Aguarde o próximo item.\n")
+                                continue
+                            
+                            usr = usuarios_db[nome_usuario]
+                            
+                            if vencedor_atual == nome_usuario:
+                                usr["saldo"] += usr["bloqueado"]
+                                usr["bloqueado"] = 0.0
+                            
+                            if valor <= lance_atual:
+                                fila_envio.put(f"[ALERTA] Lance inválido. Mínimo: R$ {lance_atual + 0.01:.2f}\n")
+                                continue
+                            
+                            if usr["saldo"] < valor:
+                                fila_envio.put(f"[ALERTA] Saldo insuficiente! Saldo livre: R$ {usr['saldo']:.2f}\n")
+                                continue
+                        
+                            if vencedor_atual in usuarios_db and vencedor_atual != nome_usuario:
+                                perdedor = usuarios_db[vencedor_atual]
+                                perdedor["saldo"] += perdedor["bloqueado"]
+                                perdedor["bloqueado"] = 0.0
+                                for c, u, f in clientes_conectados:
+                                    if u == vencedor_atual:
+                                        f.put(f"[ALERTA] Você foi superado! Saldo desbloqueado: R$ {perdedor['saldo']:.2f}\n")
+                            
+                            usr["saldo"] -= valor
+                            usr["bloqueado"] = valor
+                            lance_atual = valor
+                            tempo_restante = 20
+                            vencedor_atual = nome_usuario
+                            salvar_db()
+                            
+                            enviar_para_todos(
+                                f"[ITEM]: {item_atual['nome']} | Lance atual: R$ {lance_atual} | Por: {vencedor_atual}\n"
+                            )
+                            fila_envio.put(f"[INFO] R$ {valor:.2f} bloqueados. Saldo livre: R$ {usr['saldo']:.2f}\n")
+
+                    except ValueError:
+                        # NOVO (Fase 2): Usa fila_envio em vez de conn.sendall
+                        fila_envio.put("[ALERTA] Comando inválido. Digite um número ou :comando\n")
+
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                break
+    except Exception:
+        pass
+    finally:
+        with lock:
+            cliente_tuple = (conn, nome_usuario, fila_envio)
+            if cliente_tuple in clientes_conectados:
+                clientes_conectados.remove(cliente_tuple)
+            clientes_ativos -= 1
+        
+        fila_envio.put(None)
+        thread_b.join(timeout=2)
+        
+        try:
+            conn.close()
+        except OSError:
+            pass
+        print(f"{nome_usuario} desconectou.")
 
 # =============================
 # INICIALIZAÇÃO DO SERVIDOR
 # =============================
 if __name__ == "__main__":
+    def handler_sigint(sig, frame):
+        global leilao_geral_ativo, server
+        print("\n[SERVER] Encerrando por interrupção do usuário...")
+        leilao_geral_ativo = False
+        with lock:
+            salvar_db()
+        try:
+            server.close()
+        except (OSError, AttributeError, TypeError):
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handler_sigint)
+
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((HOST, PORT))
     server.listen()
 
     print(f"Servidor iniciado. Limite de conexões simultâneas: {MAX_CLIENTES}")
+
+    # Carrega banco de dados persistido
+    carregar_db()
 
     # Inicia as threads globais (Leiloeiro + Bot)
     threading.Thread(target=gerenciar_leiloes, daemon=True).start()
@@ -343,9 +404,21 @@ if __name__ == "__main__":
             
             # Cria uma thread para CADA usuário que se conectar
             threading.Thread(target=processar_cliente, args=(conn, addr), daemon=True).start()
+        except OSError as e:
+            if leilao_geral_ativo:
+                print(f"[SERVER] Erro ao aceitar conexão: {e}")
+                continue
+            else:
+                break
         except KeyboardInterrupt:
             print("\nEncerrando servidor...")
             leilao_geral_ativo = False
+            with lock:
+                salvar_db()
+            try:
+                server.close()
+            except OSError:
+                pass
             break
 
 

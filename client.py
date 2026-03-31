@@ -10,7 +10,7 @@ item = "Aguardando..."
 lance = "0.00"
 tempo = "20"
 vencedor = "Ninguém"
-running = True
+_stop_event = threading.Event()
 
 notificacoes = [] 
 lock = threading.Lock()
@@ -55,8 +55,8 @@ def desenhar():
         
         linhas_vazias = 5 - len(notificacoes)
         for notif in notificacoes:
-            # Aumentamos o limite de corte de 59 para 79
-            sys.stdout.write(f"> {notif}".ljust(80)[:79] + "\n") 
+            # Aumentamos o limite de corte de 59 para 80
+            sys.stdout.write(f"> {notif}".ljust(80)[:80] + "\n") 
             
         for _ in range(linhas_vazias):
             sys.stdout.write(" ".ljust(80) + "\n")
@@ -67,12 +67,15 @@ def desenhar():
         sys.stdout.flush()
 
 def receber(sock):
-    global item, lance, tempo, vencedor, running
+    global item, lance, tempo, vencedor
 
-    while running:
+    while not _stop_event.is_set():
         try:
             msg = sock.recv(1024).decode()
-            if not msg: break
+            if not msg:
+                _stop_event.set()
+                adicionar_notificacao("[ALERTA] Conexão encerrada pelo servidor.")
+                break
             
             linhas = msg.strip().split("\n")
 
@@ -110,16 +113,15 @@ def receber(sock):
                 elif any(tag in linha for tag in ["[INFO]", "[RESPOSTA]", "[ALERTA]", "CONECTADO!!"]):
                     adicionar_notificacao(linha)
 
-            if running:
+            if not _stop_event.is_set():
                 desenhar()
 
-        except Exception:
-            running = False
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            _stop_event.set()
+            adicionar_notificacao("[ALERTA] Conexão encerrada pelo servidor.")
             break
 
 def enviar(sock):
-    global running
-
     limpar() 
     sys.stdout.write("\n" * 20) 
     sys.stdout.write("Digite seu lance ou comando:\n> ")
@@ -127,21 +129,26 @@ def enviar(sock):
 
     desenhar()
 
-    while running:
+    while not _stop_event.is_set():
         try:
             msg = input()
-            if not running: break
+            if _stop_event.is_set():
+                break
                 
             sock.sendall((msg + "\n").encode())
             
             if msg == ":quit":
-                running = False
+                _stop_event.set()
                 break
                 
             sys.stdout.write("\033[1A\033[2K> ")
             sys.stdout.flush()
             
+        except (BrokenPipeError, OSError):
+            _stop_event.set()
+            break
         except EOFError:
+            _stop_event.set()
             break
 
 if __name__ == "__main__":
@@ -165,7 +172,11 @@ if __name__ == "__main__":
         
         enviar(client)
         
-    except ConnectionRefusedError:
-        print("Erro: Servidor não encontrado. Ligue o servidor primeiro!")
+    except (ConnectionRefusedError, TimeoutError, OSError) as e:
+        print(f"Erro: Não foi possível conectar ao servidor. ({e})")
     finally:
-        client.close()
+        _stop_event.set()
+        try:
+            client.close()
+        except OSError:
+            pass
